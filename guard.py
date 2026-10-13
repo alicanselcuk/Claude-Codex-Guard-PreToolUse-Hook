@@ -159,12 +159,41 @@ def is_readonly_search_segment(segment: str) -> bool:
         if base == "git" and idx + 1 < len(words):
             if command_basename(words[idx + 1]) != "grep":
                 return False
-            # Git can pass this argument to a shell as a pager command.
-            return not re.search(r"--open-files-in-pager(?:[=\s]|$)|(?:^|\s)-O", segment)
+            return not git_grep_pager_arguments(segment)
         if base in {"rg", "ripgrep"} and re.search(r"(?:^|\s)--pre(?:[=\s]|$)", segment):
             return False
         return base in SAFE_SEARCH_COMMANDS
     return False
+
+
+def git_grep_pager_arguments(segment: str) -> list[str]:
+    """Read explicit pager options, preserving option-like search data."""
+    words = command_words(segment, limit=len(segment))
+    idx = 0
+    while idx < len(words) and (
+        command_basename(words[idx]) in COMMAND_WRAPPERS
+        or re.fullmatch(r"[A-Za-z_]\w*=.*", words[idx])
+    ):
+        idx += 1
+    if idx + 1 >= len(words) or command_basename(words[idx]) != "git" or command_basename(words[idx + 1]) != "grep":
+        return []
+    pagers: list[str] = []
+    idx += 2
+    while idx < len(words):
+        argument = words[idx]
+        if argument == "--":
+            break
+        if argument in {"-e", "--regexp", "-f", "--file"}:
+            idx += 2
+            continue
+        if argument.startswith("-O"):
+            pagers.append(argument[2:])
+        elif argument == "--open-files-in-pager":
+            pagers.append("")
+        elif argument.startswith("--open-files-in-pager="):
+            pagers.append(argument.split("=", 1)[1])
+        idx += 1
+    return pagers
 
 
 def strip_safe_quoted_literals(segment: str) -> str:
@@ -211,10 +240,16 @@ def strip_safe_quoted_literals(segment: str) -> str:
 
 
 def strip_readonly_search_patterns(command: str) -> str:
-    return "\n".join(
-        strip_safe_quoted_literals(segment) if is_readonly_search_segment(segment) else segment
-        for segment in split_shell_segments(command)
-    )
+    sanitized: list[str] = []
+    for segment in split_shell_segments(command):
+        if is_readonly_search_segment(segment):
+            sanitized.append(strip_safe_quoted_literals(segment))
+        else:
+            sanitized.append(segment)
+            # Scan pager bodies separately so a quoted '-Ogit ...' still
+            # exposes the executable command to the existing rule patterns.
+            sanitized.extend(git_grep_pager_arguments(segment))
+    return "\n".join(sanitized)
 
 
 def strip_commit_message(command: str) -> str:
