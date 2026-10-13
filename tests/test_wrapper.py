@@ -39,19 +39,18 @@ class WrapperTests(unittest.TestCase):
         bash = bash_path()
         if not bash:
             self.skipTest("Bash is unavailable")
-        with tempfile.TemporaryDirectory() as folder:
-            for name in ("python", "python3", "py"):
-                stub = Path(folder) / name
-                stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-                stub.chmod(0o755)
-            # Run inside Bash to avoid Windows PATH conversion differences.
-            result = subprocess.run(
-                [bash, "-c", 'export PATH="$1:$PATH"; bash "$2"', "wrapper-test",
-                 folder, str(ROOT / "guard.sh")],
-                input="{}", text=True, capture_output=True, timeout=15,
-            )
-            self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("Python 3.11+ is required", result.stderr)
+        # Export failing version probes instead of inserting Windows drive
+        # paths into Bash's colon-delimited PATH.
+        probes = (
+            'python() { return 1; }; py() { return 1; }; python3() { return 1; }; '
+            'export -f python py python3; bash "$1"'
+        )
+        result = subprocess.run(
+            [bash, "-c", probes, "wrapper-test", str(ROOT / "guard.sh")],
+            input="{}", text=True, capture_output=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Python 3.11+ is required", result.stderr)
 
 
 if __name__ == "__main__":
